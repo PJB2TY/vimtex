@@ -7,30 +7,25 @@
 function! vimtex#syntax#p#tabularx#load(cfg) abort " {{{1
   call vimtex#syntax#packages#load('array')
 
-  syntax match texCmdNewcolumn "\\newcolumntype\>"
-        \ nextgroup=texCmdNewcolumnName,texNewcolumnArgName skipwhite skipnl
-
-  syntax match texCmdNewcolumnName contained "\\\w\+"
-        \ nextgroup=texNewcolumnOpt,texNewcolumnArg skipwhite skipnl
-  call vimtex#syntax#core#new_arg('texNewcolumnArgName', {
-        \ 'next': 'texNewcolumnOpt,texNewcolumnArg',
+  " The format is \begin{tabularx}{WIDTH}[POS]{PREAMBLE}
+  syntax match texCmdTabularx "\\begin{tabularx}"
+        \ skipwhite skipnl
+        \ nextgroup=texTabularxWidth
+        \ contains=texCmdEnv
+  call vimtex#syntax#core#new_arg('texTabularxWidth', {
+        \ 'next': 'texTabularxPreamble,texTabularxOpt,',
         \})
-
-  call vimtex#syntax#core#new_opt('texNewcolumnOpt', {
-        \ 'next': 'texNewcolumnArg',
-        \ 'opts': 'oneline',
+  call vimtex#syntax#core#new_opt('texTabularxOpt', {
+        \ 'next': 'texTabularxPreamble',
+        \ 'contains': 'texComment,@NoSpell',
         \})
-  call vimtex#syntax#core#new_arg('texNewcolumnArg', {
+  call vimtex#syntax#core#new_arg('texTabularxPreamble', {
         \ 'contains': '@texClusterTabular'
         \})
-  syntax match texNewcolumnParm contained "#\d\+"
-        \ containedin=texNewcolumnArg,texTabularPostPreArg,texTabularCmdArg
 
-  highlight def link texCmdNewcolumn      texCmd
-  highlight def link texCmdNewcolumnName  texCmd
-  highlight def link texNewcolumnArgName  texArg
-  highlight def link texNewcolumnOpt      texOpt
-  highlight def link texNewcolumnParm     texParm
+  highlight def link texTabularxPreamble    texOpt
+  highlight def link texTabularxWidth       texLength
+  highlight def link texTabularxOpt         texEnvOpt
 endfunction
 
 " }}}1

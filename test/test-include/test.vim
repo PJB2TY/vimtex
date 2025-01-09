@@ -12,18 +12,25 @@ if empty($INMAKE) | finish | endif
 
 normal! Gkk
 silent normal! gf
-call vimtex#test#assert_equal('references.bib', expand('%'))
+call assert_equal('references.bib', expand('%'))
 
 silent normal! 
-call vimtex#test#assert_equal('test.tex', expand('%'))
+call assert_equal('test.tex', expand('%'))
 
-normal! 3k
+normal! 11G
 silent normal! gf
-call vimtex#test#assert_equal('sub/file2.tex', expand('%'))
+call assert_equal('sub/file2.tex', expand('%'))
 
-silent normal! kw
-call vimtex#test#assert_equal('test.tex', expand('%'))
-normal! gf
-call vimtex#test#assert_equal('sub/file1.tex', expand('%'))
+silent normal! 
+call assert_equal('test.tex', expand('%'))
+silent normal! kwgf
+call assert_equal('sub/file1.tex', expand('%'))
 
-quit!
+call assert_equal([
+      \ 'test.tex',
+      \ 'sub/file1.tex',
+      \ 'sub/file2.tex',
+      \ 'sub/file3.tex',
+      \], b:vimtex.get_sources())
+
+call vimtex#test#finished()

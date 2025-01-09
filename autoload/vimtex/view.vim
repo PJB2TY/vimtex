@@ -9,14 +9,11 @@ function! vimtex#view#init_buffer() abort " {{{1
 
   command! -buffer -nargs=? -complete=file VimtexView
         \ call vimtex#view#view(<q-args>)
-  if has_key(b:vimtex.viewer, 'reverse_search')
-    command! -buffer -nargs=* VimtexViewRSearch
-         \ call vimtex#view#reverse_search()
-  endif
 
   nnoremap <buffer> <plug>(vimtex-view) :VimtexView<cr>
-  if has_key(b:vimtex.viewer, 'reverse_search')
-    nnoremap <buffer> <plug>(vimtex-reverse-search) :VimtexViewRSearch<cr>
+
+  if has('nvim')
+    call s:nvim_prune_servernames()
   endif
 endfunction
 
@@ -25,11 +22,11 @@ function! vimtex#view#init_state(state) abort " {{{1
   if !g:vimtex_view_enabled | return | endif
   if has_key(a:state, 'viewer') | return | endif
 
-  if g:vimtex_view_use_temp_files
-    augroup vimtex_view_buffer
-      autocmd User VimtexEventCompileSuccess call b:vimtex.viewer.copy_files()
-    augroup END
-  endif
+  augroup vimtex_viewer
+    autocmd!
+    autocmd User VimtexEventCompileSuccess call vimtex#view#compiler_callback()
+    autocmd User VimtexEventCompileStopped call vimtex#view#compiler_stopped()
+  augroup END
 
   try
     let a:state.viewer = vimtex#view#{g:vimtex_view_method}#new()
@@ -50,63 +47,158 @@ function! vimtex#view#view(...) abort " {{{1
 endfunction
 
 " }}}1
-function! vimtex#view#reverse_search() abort " {{{1
-  if exists('*b:vimtex.viewer.reverse_search')
-    call b:vimtex.viewer.reverse_search()
+function! vimtex#view#compiler_callback() abort " {{{1
+  if exists('*b:vimtex.viewer.compiler_callback')
+    if !b:vimtex.viewer.check() | return | endif
+
+    let l:pdf = b:vimtex.viewer.out()
+    if empty(l:pdf) | return | endif
+
+    call b:vimtex.viewer.compiler_callback(l:pdf)
   endif
 endfunction
 
 " }}}1
-function! vimtex#view#not_readable(output) abort " {{{1
-  if filereadable(a:output) | return 0 | endif
-
-  call vimtex#log#warning('Viewer cannot read PDF file!', a:output)
-  return 1
+function! vimtex#view#compiler_stopped() abort " {{{1
+  if exists('*b:vimtex.viewer.compiler_stopped')
+    call b:vimtex.viewer.compiler_stopped()
+  endif
 endfunction
 
 " }}}1
 
-function! vimtex#view#reverse_goto(line, filename) abort " {{{1
+function! vimtex#view#inverse_search(line, filename, column = 0) abort " {{{1
+  " Only activate in VimTeX buffers
+  if !exists('b:vimtex') | return -1 | endif
+
+  " Only activate in relevant VimTeX projects
+  let l:file = resolve(a:filename)
+  let l:sources = b:vimtex.get_sources()
+  if vimtex#paths#is_abs(l:file)
+    call map(l:sources, {_, x -> vimtex#paths#join(b:vimtex.root, x)})
+  endif
+  if index(l:sources, l:file) < 0 | return -2 | endif
+
+
   if mode() ==# 'i' | stopinsert | endif
 
-  let l:file = resolve(a:filename)
-
   " Open file if necessary
-  if !bufexists(l:file)
+  if !bufloaded(l:file)
     if filereadable(l:file)
-      execute 'silent edit' l:file
+      try
+        execute g:vimtex_view_reverse_search_edit_cmd l:file
+      catch
+        call vimtex#log#warning([
+              \ 'Reverse goto failed!',
+              \ printf('Command error: %s %s',
+              \        g:vimtex_view_reverse_search_edit_cmd, l:file)])
+        return -3
+      endtry
     else
-      call vimtex#log#warning("Reverse goto failed for file:\n" . l:file)
-      return
+      call vimtex#log#warning([
+            \ 'Reverse goto failed!',
+            \ printf('File not readable: "%s"', l:file)])
+      return -4
     endif
   endif
 
-  " Go to correct buffer and line
+  " Get buffer, window, and tab numbers
+  " * If tab/window exists, switch to it/them
   let l:bufnr = bufnr(l:file)
-  let l:winnr = bufwinnr(l:file)
-  execute l:winnr >= 0
-        \ ? l:winnr . 'wincmd w'
-        \ : 'buffer ' . l:bufnr
+  try
+    let [l:winid; _] = win_findbuf(l:bufnr)
+    let [l:tabnr, l:winnr] = win_id2tabwin(l:winid)
+    execute l:tabnr . 'tabnext'
+    execute l:winnr . 'wincmd w'
+  catch
+    execute g:vimtex_view_reverse_search_edit_cmd l:file
+  endtry
 
   execute 'normal!' a:line . 'G'
-  normal! zMzvzz
+  if a:column > 0
+    execute 'normal!' a:column . '|'
+  endif
+  if b:vimtex.viewer.xdo_check()
+    call b:vimtex.viewer.xdo_focus_vim()
+  endif
   redraw
 
-  " Attempt to focus Vim
-  if executable('pstree') && executable('xdotool')
-    let l:pids = reverse(split(system('pstree -s -p ' . getpid()), '\D\+'))
-
-    let l:xwinids = []
-    call map(copy(l:pids),
-          \ {_, x -> extend(l:xwinids, reverse(split(system(
-          \   'xdotool search --onlyvisible --pid ' . x))))})
-    call filter(l:xwinids, '!empty(v:val)')
-
-    if !empty(l:xwinids)
-      call system('xdotool windowactivate ' . l:xwinids[0] . ' &')
-      call feedkeys("\<c-l>", 'tn')
-    endif
+  if exists('#User#VimtexEventViewReverse')
+    doautocmd <nomodeline> User VimtexEventViewReverse
   endif
 endfunction
 
 " }}}1
+function! vimtex#view#inverse_search_cmd(line, filename, column) abort " {{{1
+  " One may call this function manually, but the main usage is to through the
+  " command "VimtexInverseSearch". See ":help vimtex-synctex-inverse-search"
+  " for more info.
+
+  if a:line > 0 && !empty(a:filename)
+    try
+      if has('nvim')
+        call s:inverse_search_cmd_nvim(a:line, a:filename, a:column)
+      else
+        call s:inverse_search_cmd_vim(a:line, a:filename, a:column)
+      endif
+    catch
+    endtry
+  endif
+
+  quitall!
+endfunction
+
+" }}}1
+
+function! s:inverse_search_cmd_nvim(line, filename, column) abort " {{{1
+  if !filereadable(s:nvim_servernames) | return | endif
+
+  for l:server in readfile(s:nvim_servernames)
+    try
+      let l:socket = sockconnect('pipe', l:server, {'rpc': 1})
+    catch
+    endtry
+
+    call rpcnotify(l:socket,
+          \ 'nvim_call_function',
+          \ 'vimtex#view#inverse_search',
+          \ [a:line, a:filename, a:column])
+    call chanclose(l:socket)
+  endfor
+endfunction
+
+function! s:inverse_search_cmd_vim(line, filename, column) abort " {{{1
+  for l:server in split(serverlist(), "\n")
+    call remote_expr(l:server,
+          \ printf("vimtex#view#inverse_search(%d, '%s', %d)",
+          \        a:line, a:filename, a:column))
+  endfor
+endfunction
+
+" }}}1
+
+function! s:nvim_prune_servernames() abort " {{{1
+  " Load servernames from file
+  let l:servers = filereadable(s:nvim_servernames)
+        \ ? readfile(s:nvim_servernames)
+        \ : []
+
+  " Check which servers are available
+  let l:available_servernames = []
+  for l:server in vimtex#util#uniq_unsorted(l:servers + [v:servername])
+    try
+      let l:socket = sockconnect('pipe', l:server)
+      call add(l:available_servernames, l:server)
+      call chanclose(l:socket)
+    catch
+    endtry
+  endfor
+
+  " Write the pruned list to file
+  call writefile(l:available_servernames, s:nvim_servernames)
+endfunction
+
+" }}}1
+
+
+let s:nvim_servernames = vimtex#cache#path('nvim_servernames.log')

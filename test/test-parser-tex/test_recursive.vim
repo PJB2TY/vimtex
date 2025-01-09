@@ -7,12 +7,15 @@ set hidden
 
 nnoremap q :qall!<cr>
 
+call vimtex#log#set_silent()
+
 if empty($INMAKE) | finish | endif
 
 silent! edit test_recursive.tex
+call b:vimtex.get_sources()
 
 let s:log = vimtex#log#get()
-call vimtex#test#assert_equal(1, len(s:log))
-call vimtex#test#assert_equal('Recursive file inclusion!', s:log[0].msg[0])
+call assert_equal(1, len(s:log))
+call assert_equal('Recursive file inclusion!', s:log[0].msg[0])
 
-quitall!
+call vimtex#test#finished()
