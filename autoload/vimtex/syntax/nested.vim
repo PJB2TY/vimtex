@@ -11,7 +11,7 @@ function! vimtex#syntax#nested#include(name) abort " {{{1
     let s:included[l:inc_name] = s:include(l:inc_name, a:name)
   endif
 
-  return s:included[l:inc_name] ? l:inc_name : ''
+  return s:included[l:inc_name] ? '@' . l:inc_name : ''
 endfunction
 
 " }}}1
@@ -29,6 +29,11 @@ function! s:include(cluster, name) abort " {{{1
 
   if empty(globpath(&runtimepath, l:path)) | return 0 | endif
 
+  try
+    call s:hooks_{l:name}_before()
+  catch /E117/
+  endtry
+
   unlet b:current_syntax
   execute 'syntax include @' . a:cluster l:path
   let b:current_syntax = 'tex'
@@ -37,7 +42,30 @@ function! s:include(cluster, name) abort " {{{1
     execute 'syntax cluster' a:cluster 'remove=' . l:ignored_group
   endfor
 
+  try
+    call s:hooks_{l:name}_after()
+  catch /E117/
+  endtry
+
+  " Reset syntax options to ensure options are not overridden by external 
+  call vimtex#syntax#core#init_options()
+
   return 1
+endfunction
+
+" }}}1
+
+function! s:hooks_dockerfile_before() abort " {{{1
+  " $VIMRUNTIME/syntax/dockerfile.vim does something it should not do - it sets
+  " the commentstring option (which should rather be done within
+  " a filetype-plugin). We use the hooks to save then restore the option here.
+  let s:commentstring = &l:commentstring
+endfunction
+
+" }}}1
+function! s:hooks_dockerfile_after() abort " {{{1
+  let &l:commentstring = s:commentstring
+  syntax cluster vimtex_nested_dockerfile remove=dockerfileLinePrefix
 endfunction
 
 " }}}1

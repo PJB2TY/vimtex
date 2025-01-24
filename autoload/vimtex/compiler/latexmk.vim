@@ -5,22 +5,10 @@
 "
 
 function! vimtex#compiler#latexmk#init(options) abort " {{{1
-  let l:compiler = deepcopy(s:compiler)
-
-  call l:compiler.init(extend(a:options,
-        \ get(g:, 'vimtex_compiler_latexmk', {}), 'keep'))
-
-  return l:compiler
+  return s:compiler.new(a:options)
 endfunction
 
 " }}}1
-function! vimtex#compiler#latexmk#wrap_option(name, value) abort " {{{1
-  return has('win32')
-        \ ? ' -e "$' . a:name . ' = ''' . a:value . '''"'
-        \ : ' -e ''$' . a:name . ' = "' . a:value . '"'''
-endfunction
-
-"}}}1
 
 function! vimtex#compiler#latexmk#get_rc_opt(root, opt, type, default) abort " {{{1
   "
@@ -90,533 +78,290 @@ function! vimtex#compiler#latexmk#get_rc_opt(root, opt, type, default) abort " {
 endfunction
 
 " }}}1
+function! vimtex#compiler#latexmk#copy_temp_files() abort " {{{1
+  if exists('*b:vimtex.compiler.__copy_temp_files')
+    call b:vimtex.compiler.__copy_temp_files()
+  endif
+endfunction
 
-let s:compiler = {
+" }}}1
+
+
+let s:compiler = vimtex#compiler#_template#new({
       \ 'name' : 'latexmk',
-      \ 'executable' : 'latexmk',
-      \ 'root' : '',
-      \ 'target' : '',
-      \ 'target_path' : '',
-      \ 'build_dir' : '',
+      \ 'aux_dir': '',
       \ 'callback' : 1,
-      \ 'continuous' : 1,
-      \ 'output' : tempname(),
+      \ 'continuous': 1,
+      \ 'executable' : 'latexmk',
       \ 'options' : [
       \   '-verbose',
       \   '-file-line-error',
       \   '-synctex=1',
       \   '-interaction=nonstopmode',
       \ ],
-      \ 'hooks' : [],
-      \ 'shell' : fnamemodify(&shell, ':t'),
-      \}
+      \})
 
-function! s:compiler.init(options) abort dict " {{{1
-  call extend(self, a:options)
-
-  call self.init_check_requirements()
-  call self.init_build_dir_option()
-  call self.init_pdf_mode_option()
-
-  let self.shell = 'sh'
-
-  let l:backend = has('nvim') ? 'nvim' : 'jobs'
-  call extend(self, deepcopy(s:compiler_{l:backend}))
+function! s:compiler.__check_requirements() abort dict " {{{1
+  if !executable(self.executable)
+    call vimtex#log#warning(self.executable . ' is not executable')
+    let self.enabled = v:false
+  endif
 endfunction
 
 " }}}1
-function! s:compiler.init_build_dir_option() abort dict " {{{1
-  " Check if .latexmkrc sets the build_dir - if so this should be respected
-  let l:out_dir =
-        \ vimtex#compiler#latexmk#get_rc_opt(self.root, 'out_dir', 0, '')[0]
+function! s:compiler.__init() abort dict " {{{1
+  call vimtex#util#materialize_property(self, 'aux_dir', self.file_info)
 
-  if !empty(l:out_dir)
-    if !empty(self.build_dir) && (self.build_dir !=# l:out_dir)
-      call vimtex#log#warning(
-            \ 'Setting out_dir from latexmkrc overrides build_dir!',
-            \ 'Changed build_dir from: ' . self.build_dir,
-            \ 'Changed build_dir to: ' . l:out_dir)
-    endif
-    let self.build_dir = l:out_dir
-  endif
+  call s:compare_with_latexmkrc(self, 'out_dir')
+  call s:compare_with_latexmkrc(self, 'aux_dir')
 
-  " Check if environment variable exists; it has the highest priority
+  " $VIMTEX_OUTPUT_DIRECTORY overrides configured compiler.aux_dir
   if !empty($VIMTEX_OUTPUT_DIRECTORY)
-    if !empty(self.build_dir)
-          \ && (self.build_dir !=# $VIMTEX_OUTPUT_DIRECTORY)
+    if !empty(self.aux_dir)
+          \ && (self.aux_dir !=# $VIMTEX_OUTPUT_DIRECTORY)
       call vimtex#log#warning(
-            \ 'Setting VIMTEX_OUTPUT_DIRECTORY overrides build_dir!',
-            \ 'Changed build_dir from: ' . self.build_dir,
-            \ 'Changed build_dir to: ' . $VIMTEX_OUTPUT_DIRECTORY)
+            \ 'Setting VIMTEX_OUTPUT_DIRECTORY overrides aux_dir!',
+            \ 'Changed aux_dir from: ' . self.aux_dir,
+            \ 'Changed aux_dir to: ' . $VIMTEX_OUTPUT_DIRECTORY)
     endif
-    let self.build_dir = $VIMTEX_OUTPUT_DIRECTORY
+
+    let self.aux_dir = $VIMTEX_OUTPUT_DIRECTORY
   endif
+
+  call self.__init_temp_files()
 endfunction
 
 " }}}1
-function! s:compiler.init_pdf_mode_option() abort dict " {{{1
-  " If the TeX program directive was not set, and if the pdf_mode is set in
-  " a .latexmkrc file, then deduce the compiler engine from the value of
-  " pdf_mode.
+function! s:compiler.__build_cmd(passed_options) abort dict " {{{1
+  let l:cmd = (has('win32')
+        \ ? 'set max_print_line=2000 & '
+        \ : 'max_print_line=2000 ') . self.executable
 
-  " Parse the pdf_mode option. If not found, it is set to -1.
-  let [l:pdf_mode, l:is_local] =
-        \ vimtex#compiler#latexmk#get_rc_opt(self.root, 'pdf_mode', 1, -1)
-
-  " If pdf_mode has a supported value (1: pdflatex, 4: lualatex, 5: xelatex),
-  " override the value of self.tex_program.
-  if l:pdf_mode == 1
-    let l:tex_program = 'pdflatex'
-  elseif l:pdf_mode == 2
-    let l:tex_program = 'pdfps'
-  elseif l:pdf_mode == 3
-    let l:tex_program = 'pdfdvi'
-  elseif l:pdf_mode == 4
-    let l:tex_program = 'lualatex'
-  elseif l:pdf_mode == 5
-    let l:tex_program = 'xelatex'
-  else
-    return
-  endif
-
-  if self.tex_program ==# '_'
-    " The TeX program directive was not specified
-    let self.tex_program = l:tex_program
-  elseif l:is_local && self.tex_program !=# l:tex_program
-    call vimtex#log#warning(
-          \ 'Value of pdf_mode from latexmkrc is inconsistent with ' .
-          \ 'TeX program directive!',
-          \ 'TeX program: ' . self.tex_program,
-          \ 'pdf_mode:    ' . l:tex_program,
-          \ 'The value of pdf_mode will be ignored.')
-  endif
-endfunction
-
-" }}}1
-function! s:compiler.init_check_requirements() abort dict " {{{1
-  " Check option validity
-  if self.callback
-    if !(has('clientserver') || has('nvim') || has('job'))
-      let self.callback = 0
-      call vimtex#log#warning(
-            \ 'Can''t use callbacks without +job, +nvim, or +clientserver',
-            \ 'Callback option has been disabled.')
-    endif
-  endif
-
-  " Check for required executables
-  let l:required = [self.executable]
-  if self.continuous && !(has('win32') || has('win32unix'))
-    let l:required += ['pgrep']
-  endif
-  let l:missing = filter(l:required, '!executable(v:val)')
-
-  " Disable latexmk if required programs are missing
-  if len(l:missing) > 0
-    for l:cmd in l:missing
-      call vimtex#log#warning(l:cmd . ' is not executable')
-    endfor
-    throw 'VimTeX: Requirements not met'
-  endif
-endfunction
-
-" }}}1
-
-function! s:compiler.build_cmd() abort dict " {{{1
-  if has('win32')
-    let l:cmd = 'set max_print_line=2000 & ' . self.executable
-  else
-    if self.shell ==# 'fish'
-      let l:cmd = 'set max_print_line 2000; and ' . self.executable
-    else
-      let l:cmd = 'max_print_line=2000 ' . self.executable
-    endif
-  endif
-
-  for l:opt in self.options
-    let l:cmd .= ' ' . l:opt
-  endfor
-
+  let l:cmd .= ' ' . join(self.options) . a:passed_options
   let l:cmd .= ' ' . self.get_engine()
 
-  if !empty(self.build_dir)
-    let l:cmd .= ' -outdir=' . fnameescape(self.build_dir)
+  if !empty(self.out_dir)
+    let l:cmd .= ' -outdir=' . fnameescape(self.out_dir)
+  endif
+
+  if !empty(self.aux_dir)
+    let l:cmd .= ' -emulate-aux-dir'
+    let l:cmd .= ' -auxdir=' . fnameescape(self.aux_dir)
   endif
 
   if self.continuous
-    let l:cmd .= ' -pvc'
-
-    " Set viewer options
-    if !g:vimtex_view_automatic
-          \ || get(get(b:vimtex, 'viewer', {}), 'xwin_id') > 0
-          \ || get(s:, 'silence_next_callback', 0)
-      let l:cmd .= ' -view=none'
-    elseif g:vimtex_view_enabled
-          \ && has_key(b:vimtex.viewer, 'latexmk_append_argument')
-      let l:cmd .= b:vimtex.viewer.latexmk_append_argument()
-    endif
+    let l:cmd .= ' -pvc -pvctimeout- -view=none'
 
     if self.callback
-      if has('job') || has('nvim')
-        for [l:opt, l:val] in items({
-              \ 'success_cmd' : 'vimtex_compiler_callback_success',
-              \ 'failure_cmd' : 'vimtex_compiler_callback_failure',
-              \})
-          let l:func = 'echo ' . l:val
-          let l:cmd .= vimtex#compiler#latexmk#wrap_option(l:opt, l:func)
-        endfor
-      elseif empty(v:servername)
-        call vimtex#log#warning('Can''t use callbacks with empty v:servername')
-      else
-        " Some notes:
-        " - We excape the v:servername because this seems necessary on Windows
-        "   for neovim, see e.g. Github Issue #877
-        for [l:opt, l:val] in items({'success_cmd' : 1, 'failure_cmd' : 0})
-          let l:callback = has('win32')
-                \   ? '"vimtex#compiler#callback(' . l:val . ')"'
-                \   : '\"vimtex\#compiler\#callback(' . l:val . ')\"'
-          let l:func = vimtex#util#shellescape('""')
-                \ . g:vimtex_compiler_progname
-                \ . vimtex#util#shellescape('""')
-                \ . ' --servername ' . vimtex#util#shellescape(v:servername)
-                \ . ' --remote-expr ' . l:callback
-          let l:cmd .= vimtex#compiler#latexmk#wrap_option(l:opt, l:func)
-        endfor
-      endif
+      for [l:opt, l:val] in [
+            \ ['compiling_cmd', 'vimtex_compiler_callback_compiling'],
+            \ ['success_cmd', 'vimtex_compiler_callback_success'],
+            \ ['failure_cmd', 'vimtex_compiler_callback_failure'],
+            \]
+        let l:cmd .= s:wrap_option_appendcmd(l:opt, 'echo ' . l:val)
+      endfor
     endif
   endif
 
-  return l:cmd . ' ' . vimtex#util#shellescape(self.target)
+  return l:cmd . ' ' . vimtex#util#shellescape(self.file_info.target_basename)
 endfunction
 
 " }}}1
-function! s:compiler.get_engine() abort dict " {{{1
-  return get(extend(g:vimtex_compiler_latexmk_engines,
-        \ {
-        \  'pdfdvi'           : '-pdfdvi',
-        \  'pdfps'            : '-pdfps',
-        \  'pdflatex'         : '-pdf',
-        \  'luatex'           : '-lualatex',
-        \  'lualatex'         : '-lualatex',
-        \  'xelatex'          : '-xelatex',
-        \  'context (pdftex)' : '-pdf -pdflatex=texexec',
-        \  'context (luatex)' : '-pdf -pdflatex=context',
-        \  'context (xetex)'  : '-pdf -pdflatex=''texexec --xtx''',
-        \ }, 'keep'), self.tex_program, '-pdf')
-endfunction
-
-" }}}1
-function! s:compiler.cleanup() abort dict " {{{1
-  if self.is_running()
-    call self.kill()
-  endif
-endfunction
-
-" }}}1
-function! s:compiler.pprint_items() abort dict " {{{1
-  let l:configuration = [
-        \ ['continuous', self.continuous],
-        \ ['callback', self.callback],
-        \]
-
-  if !empty(self.build_dir)
-    call add(l:configuration, ['build_dir', self.build_dir])
-  endif
-  call add(l:configuration, ['latexmk options', self.options])
-  call add(l:configuration, ['latexmk engine', self.get_engine()])
-
+function! s:compiler.__pprint_append() abort dict " {{{1
   let l:list = []
-  if self.executable !=# s:compiler.executable
-    call add(l:list, ['latexmk executable', self.executable])
+
+  if !empty(self.aux_dir)
+    call add(l:list, ['aux_dir', self.aux_dir])
   endif
 
-  if self.target_path !=# b:vimtex.tex
-    call add(l:list, ['root', self.root])
-    call add(l:list, ['target', self.target_path])
-  endif
-
-  call add(l:list, ['configuration', l:configuration])
-
-  if has_key(self, 'process')
-    call add(l:list, ['process', self.process])
-  endif
-
-  if has_key(self, 'job')
-    if self.continuous
-      call add(l:list, ['job', self.job])
-      call add(l:list, ['pid', self.get_pid()])
-    endif
-    call add(l:list, ['cmd', self.cmd])
-  endif
+  call add(l:list, ['callback', self.callback])
+  call add(l:list, ['continuous', self.continuous])
+  call add(l:list, ['executable', self.executable])
 
   return l:list
 endfunction
 
 " }}}1
 
-function! s:compiler.clean(full) abort dict " {{{1
-  let l:restart = self.is_running()
-  if l:restart
-    call self.stop()
+function! s:compiler.get_file(ext) abort dict " {{{1
+  if g:vimtex_view_use_temp_files
+        \ && index(['pdf', 'synctex.gz'], a:ext) >= 0
+    return self.__get_temp_file(a:ext)
   endif
 
-  " Define and run the latexmk clean cmd
-  let l:cmd = (has('win32')
-        \   ? 'cd /D "' . self.root . '" & '
-        \   : 'cd ' . vimtex#util#shellescape(self.root) . '; ')
-        \ . self.executable . ' ' . (a:full ? '-C ' : '-c ')
-  if !empty(self.build_dir)
-    let l:cmd .= printf(' -outdir=%s ', fnameescape(self.build_dir))
-  endif
-  let l:cmd .= vimtex#util#shellescape(self.target)
-  call vimtex#process#run(l:cmd)
+  for l:root in [
+        \ $VIMTEX_OUTPUT_DIRECTORY,
+        \ self.aux_dir,
+        \ self.out_dir,
+        \ self.file_info.root
+        \]
+    if empty(l:root) | continue | endif
 
-  call vimtex#log#info('Compiler clean finished' . (a:full ? ' (full)' : ''))
-
-  if l:restart
-    let self.silent_next_callback = 1
-    silent call self.start()
-  endif
-endfunction
-
-" }}}1
-function! s:compiler.start(...) abort dict " {{{1
-  if self.is_running()
-    call vimtex#log#warning(
-          \ 'Compiler is already running for `' . self.target . "'")
-    return
-  endif
-
-  "
-  " Create build dir if it does not exist
-  "
-  if !empty(self.build_dir)
-    let l:dirs = split(glob(self.root . '/**/*.tex'), '\n')
-    call map(l:dirs, "fnamemodify(v:val, ':h')")
-    call map(l:dirs, 'strpart(v:val, strlen(self.root) + 1)')
-    call uniq(sort(filter(l:dirs, "v:val !=# ''")))
-    call map(l:dirs, {_, x ->
-          \ (vimtex#paths#is_abs(self.build_dir) ? '' : self.root . '/')
-          \ . self.build_dir . '/' . x})
-    call filter(l:dirs, '!isdirectory(v:val)')
-
-    " Create the non-existing directories
-    for l:dir in l:dirs
-      call mkdir(l:dir, 'p')
-    endfor
-  endif
-
-  call self.exec()
-
-  if self.continuous
-    call vimtex#log#info('Compiler started in continuous mode'
-          \ . (a:0 > 0 ? ' (single shot)' : ''))
-    if exists('#User#VimtexEventCompileStarted')
-      doautocmd <nomodeline> User VimtexEventCompileStarted
+    let l:cand = printf('%s/%s.%s', l:root, self.file_info.jobname, a:ext)
+    if !vimtex#paths#is_abs(l:root)
+      let l:cand = self.file_info.root . '/' . l:cand
     endif
-  else
-    call vimtex#log#info('Compiler started in background!')
-  endif
-endfunction
 
-" }}}1
-function! s:compiler.stop() abort dict " {{{1
-  if self.is_running()
-    call self.kill()
-    call vimtex#log#info('Compiler stopped (' . self.target . ')')
-    if exists('#User#VimtexEventCompileStopped')
-      doautocmd <nomodeline> User VimtexEventCompileStopped
-    endif
-  else
-    call vimtex#log#warning(
-          \ 'There is no process to stop (' . self.target . ')')
-  endif
-endfunction
-
-" }}}1
-function! s:compiler.wait() abort dict " {{{1
-  for l:dummy in range(50)
-    sleep 100m
-    if !self.is_running()
-      return
+    if filereadable(l:cand)
+      return fnamemodify(l:cand, ':p')
     endif
   endfor
 
-  call self.stop()
+  return ''
+endfunction
+
+" }}}1
+function! s:compiler.create_dirs() abort dict " {{{1
+  call self._create_build_dir(self.out_dir)
+  call self._create_build_dir(self.aux_dir)
+endfunction
+
+" }}}1
+function! s:compiler.remove_dirs() abort dict " {{{1
+  call self._remove_dir(self.out_dir)
+  call self._remove_dir(self.aux_dir)
 endfunction
 
 " }}}1
 
-let s:compiler_jobs = {}
-function! s:compiler_jobs.exec() abort dict " {{{1
-  let self.cmd = self.build_cmd()
-  let l:cmd = has('win32')
-        \ ? 'cmd /s /c "' . self.cmd . '"'
-        \ : ['sh', '-c', self.cmd]
+function! s:compiler.clean(full) abort dict " {{{1
+  call self.__clean_temp_files(a:full)
 
-  let l:options = {
-        \ 'out_io' : 'file',
-        \ 'err_io' : 'file',
-        \ 'out_name' : self.output,
-        \ 'err_name' : self.output,
-        \}
-  if self.continuous
-    let l:options.out_io = 'pipe'
-    let l:options.err_io = 'pipe'
-    let l:options.out_cb = function('s:callback_continuous_output')
-    let l:options.err_cb = function('s:callback_continuous_output')
-    call writefile([], self.output, 'a')
-  else
-    let s:cb_target = self.target_path !=# b:vimtex.tex
-          \ ? self.target_path : ''
-    let l:options.exit_cb = function('s:callback')
+  let l:cmd = self.executable
+  let l:cmd .= a:full ? ' -C' : ' -c'
+
+  if !empty(self.out_dir)
+    let l:cmd .= ' -outdir=' . fnameescape(self.out_dir)
+  endif
+  if !empty(self.aux_dir)
+    let l:cmd .= ' -emulate-aux-dir'
+    let l:cmd .= ' -auxdir=' . fnameescape(self.aux_dir)
   endif
 
-  call vimtex#paths#pushd(self.root)
-  let self.job = job_start(l:cmd, l:options)
-  call vimtex#paths#popd()
+  let l:cmd .= ' ' . vimtex#util#shellescape(self.file_info.target_basename)
+
+  call vimtex#jobs#run(l:cmd, {'cwd': self.file_info.root})
 endfunction
 
 " }}}1
-function! s:compiler_jobs.start_single() abort dict " {{{1
-  let l:continuous = self.continuous
-  let self.continuous = 0
-  call self.start()
-  let self.continuous = l:continuous
-endfunction
+function! s:compiler.get_engine() abort dict " {{{1
+  " Parse tex_program from TeX directive
+  let l:tex_program_directive = b:vimtex.get_tex_program()
+  let l:tex_program = l:tex_program_directive
 
-" }}}1
-function! s:compiler_jobs.kill() abort dict " {{{1
-  call job_stop(self.job)
-endfunction
+  " Parse tex_program from pdf_mode option in .latexmkrc
+  let [l:pdf_mode, l:is_local] = vimtex#compiler#latexmk#get_rc_opt(
+        \ self.file_info.root, 'pdf_mode', 1, -1)
 
-" }}}1
-function! s:compiler_jobs.is_running() abort dict " {{{1
-  return has_key(self, 'job') && job_status(self.job) ==# 'run'
-endfunction
+  if l:pdf_mode >= 1 && l:pdf_mode <= 5
+    let l:tex_program_pdfmode = [
+          \ 'pdflatex',
+          \ 'pdfps',
+          \ 'pdfdvi',
+          \ 'lualatex',
+          \ 'xelatex',
+          \][l:pdf_mode-1]
 
-" }}}1
-function! s:compiler_jobs.get_pid() abort dict " {{{1
-  return has_key(self, 'job')
-        \ ? get(job_info(self.job), 'process') : 0
-endfunction
-
-" }}}1
-function! s:callback(ch, msg) abort " {{{1
-  call vimtex#compiler#callback(!vimtex#qf#inquire(s:cb_target))
-endfunction
-
-" }}}1
-function! s:callback_continuous_output(channel, msg) abort " {{{1
-  if exists('b:vimtex.compiler.output')
-        \ && filewritable(b:vimtex.compiler.output)
-    call writefile([a:msg], b:vimtex.compiler.output, 'aS')
+    " Use pdf_mode if there is no TeX directive
+    if l:tex_program_directive ==# '_'
+      let l:tex_program = l:tex_program_pdfmode
+    elseif l:is_local && l:tex_program_directive !=# l:tex_program_pdfmode
+      " Give warning when there may be a confusing conflict
+      call vimtex#log#warning(
+            \ 'Value of pdf_mode from latexmkrc is inconsistent with ' .
+            \ 'TeX program directive!',
+            \ 'TeX program: ' . l:tex_program_directive,
+            \ 'pdf_mode:    ' . l:tex_program_pdfmode,
+            \ 'The value of pdf_mode will be ignored.')
+    endif
   endif
 
-  if a:msg ==# 'vimtex_compiler_callback_success'
-    call vimtex#compiler#callback(1)
-  elseif a:msg ==# 'vimtex_compiler_callback_failure'
-    call vimtex#compiler#callback(0)
+  return get(g:vimtex_compiler_latexmk_engines,
+        \ l:tex_program,
+        \ g:vimtex_compiler_latexmk_engines._)
+endfunction
+
+" }}}1
+
+function! s:compiler.__init_temp_files() abort dict " {{{1
+  let self.__temp_files = {}
+  if !g:vimtex_view_use_temp_files | return | endif
+
+  let l:root = !empty(self.out_dir)
+        \ ? self.out_dir
+        \ : self.file_info.root
+  for l:ext in ['pdf', 'synctex.gz']
+    let l:source = printf('%s/%s.%s', l:root, self.file_info.jobname, l:ext)
+    let l:target = printf('%s/_%s.%s', l:root, self.file_info.jobname, l:ext)
+    let self.__temp_files[l:source] = l:target
+  endfor
+
+  augroup vimtex_compiler
+    autocmd!
+    autocmd User VimtexEventCompileSuccess
+          \ call vimtex#compiler#latexmk#copy_temp_files()
+  augroup END
+endfunction
+
+" }}}1
+function! s:compiler.__copy_temp_files() abort dict " {{{1
+  for [l:source, l:target] in items(self.__temp_files)
+    if getftime(l:source) > getftime(l:target)
+      call writefile(readfile(l:source, 'b'), l:target, 'b')
+    endif
+  endfor
+endfunction
+
+" }}}1
+function! s:compiler.__get_temp_file(ext) abort dict " {{{1
+  for l:file in values(self.__temp_files)
+    if filereadable(l:file) && l:file =~# a:ext . '$'
+      return l:file
+    endif
+  endfor
+
+  return ''
+endfunction
+
+" }}}1
+function! s:compiler.__clean_temp_files(full) abort dict " {{{1
+  for l:file in values(self.__temp_files)
+    if filereadable(l:file) && (a:full || l:file[-3:] !=# 'pdf')
+      call delete(l:file)
+    endif
+  endfor
+endfunction
+
+" }}}1
+
+
+function! s:compare_with_latexmkrc(dict, option) abort " {{{1
+  " Check if option is specified in .latexmkrc.
+  " If it is, .latexmkrc should be respected!
+  let l:value = vimtex#compiler#latexmk#get_rc_opt(
+        \ a:dict.file_info.root, a:option, 0, '')[0]
+  if !empty(l:value)
+    if !empty(a:dict[a:option]) && (a:dict[a:option] !=# l:value)
+      call vimtex#log#warning(
+            \ 'Option "' . a:option . '" is overridden by latexmkrc',
+            \ 'Changed from: ' . a:dict[a:option],
+            \ 'Changed to: ' . l:value)
+    endif
+    let a:dict[a:option] = l:value
   endif
-
-  try
-    for l:Hook in get(get(get(b:, 'vimtex', {}), 'compiler', {}), 'hooks', [])
-      call l:Hook(a:msg)
-    endfor
-  catch /E716/
-  endtry
 endfunction
 
 " }}}1
-
-let s:compiler_nvim = {}
-function! s:compiler_nvim.exec() abort dict " {{{1
-  let self.cmd = self.build_cmd()
-  let l:cmd = has('win32')
-        \ ? 'cmd /s /c "' . self.cmd . '"'
-        \ : ['sh', '-c', self.cmd]
-
-  let l:shell = {
-        \ 'on_stdout' : function('s:callback_nvim_output'),
-        \ 'on_stderr' : function('s:callback_nvim_output'),
-        \ 'cwd' : self.root,
-        \ 'target' : self.target_path,
-        \ 'output' : self.output,
-        \}
-
-  if !self.continuous
-    let l:shell.on_exit = function('s:callback_nvim_exit')
-  endif
-
-  " Initialize output file
-  try
-    call writefile([], self.output)
-  endtry
-
-  let self.job = jobstart(l:cmd, l:shell)
+function! s:wrap_option_appendcmd(name, value) abort " {{{1
+  " Note: On Linux, we use double quoted perl strings; these interpolate
+  "       variables. One should therefore NOT pass values that contain `$`.
+  let l:win_cmd_sep = has('nvim') ? '^&' : '&'
+  let l:common = printf('$%s = ($%s ? $%s', a:name, a:name, a:name)
+  return has('win32')
+        \ ? printf(' -e "%s . '' %s '' : '''') . ''%s''"',
+        \          l:common, l:win_cmd_sep, a:value)
+        \ : printf(' -e ''%s . " ; " : "") . "%s"''',
+        \          l:common, a:value)
 endfunction
 
-" }}}1
-function! s:compiler_nvim.start_single() abort dict " {{{1
-  let l:continuous = self.continuous
-  let self.continuous = 0
-  call self.start()
-  let self.continuous = l:continuous
-endfunction
-
-" }}}1
-function! s:compiler_nvim.kill() abort dict " {{{1
-  call jobstop(self.job)
-endfunction
-
-" }}}1
-function! s:compiler_nvim.is_running() abort dict " {{{1
-  try
-    let pid = jobpid(self.job)
-    return 1
-  catch
-    return 0
-  endtry
-endfunction
-
-" }}}1
-function! s:compiler_nvim.get_pid() abort dict " {{{1
-  try
-    return jobpid(self.job)
-  catch
-    return 0
-  endtry
-endfunction
-
-" }}}1
-function! s:callback_nvim_output(id, data, event) abort dict " {{{1
-  " Filter out unwanted newlines
-  let l:data = split(substitute(join(a:data, 'QQ'), '^QQ\|QQ$', '', ''), 'QQ')
-
-  if !empty(l:data) && filewritable(self.output)
-    call writefile(l:data, self.output, 'a')
-  endif
-
-  if match(a:data, 'vimtex_compiler_callback_success') != -1
-    call vimtex#compiler#callback(!vimtex#qf#inquire(self.target))
-  elseif match(a:data, 'vimtex_compiler_callback_failure') != -1
-    call vimtex#compiler#callback(0)
-  endif
-
-  try
-    for l:Hook in get(get(get(b:, 'vimtex', {}), 'compiler', {}), 'hooks', [])
-      call l:Hook(join(a:data, "\n"))
-    endfor
-  catch /E716/
-  endtry
-endfunction
-
-" }}}1
-function! s:callback_nvim_exit(id, data, event) abort dict " {{{1
-  if !exists('b:vimtex.tex') | return | endif
-
-  let l:target = self.target !=# b:vimtex.tex ? self.target : ''
-  call vimtex#compiler#callback(!vimtex#qf#inquire(l:target))
-endfunction
-
-" }}}1
+"}}}1
