@@ -18,26 +18,31 @@ let s:is_loading = 1
 " ensure that the options are loaded!
 call vimtex#options#init()
 
-
-" Load core syntax (does not depend on VimTeX state)
-call vimtex#syntax#core#init()
-
-" Load core highlighting rules
+" Load core syntax and highlighting rules (does not depend on VimTeX state)
+call vimtex#syntax#core#init_options()
+call vimtex#syntax#core#init_rules()
 call vimtex#syntax#core#init_highlights()
 
 " Initialize buffer local syntax state
+unlet! b:vimtex_syntax_did_postinit
 let b:vimtex_syntax = {}
 call vimtex#syntax#nested#reset()
 
-
-" Load package specific syntax (may depend on VimTeX state)
+" Load syntax rules that depend on VimTeX state
+" * This includes e.g. package specific syntax
 if exists('b:vimtex')
-  call vimtex#syntax#packages#init()
-else
-  augroup vimtex_syntax
-    autocmd!
-    autocmd User VimtexEventInitPost call vimtex#syntax#packages#init()
-  augroup END
+  call vimtex#syntax#core#init_post()
 endif
+
+" Use autocommands to ensure
+" 1. that highlight groups are defined when colorschemes are changed or the
+"    background is toggled, and
+" 2. that the init_post function is executed when VimTeX state is loaded (if it
+"    was not already done).
+augroup vimtex_syntax
+  autocmd! * <buffer>
+  autocmd ColorScheme <buffer> call vimtex#syntax#core#init_highlights()
+  autocmd! User VimtexEventInitPost call vimtex#syntax#core#init_post()
+augroup END
 
 unlet s:is_loading

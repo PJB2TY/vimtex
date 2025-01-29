@@ -18,19 +18,21 @@ function! vimtex#syntax#p#minted#load(cfg) abort " {{{1
 
   " Match minted environment boundaries
   syntax match texMintedEnvBgn contained '\\begin{minted}'
-        \ nextgroup=texMintedEnvOpt,texMintedEnvArg skipwhite
+        \ nextgroup=texMintedEnvOpt,texMintedEnvArg skipwhite skipnl
         \ contains=texCmdEnv
   call vimtex#syntax#core#new_opt('texMintedEnvOpt', {'next': 'texMintedEnvArg'})
   call vimtex#syntax#core#new_arg('texMintedEnvArg', {'contains': ''})
 
   " Match starred custom minted environments and the option group
   syntax match texMintedEnvBgn contained "\\begin{\w\+\*}"
-        \ nextgroup=texMintedEnvArgOpt skipwhite
+        \ nextgroup=texMintedEnvArgOpt skipwhite skipnl
         \ contains=texCmdEnv
   call vimtex#syntax#core#new_arg('texMintedEnvArgOpt', {'contains': ''})
 
   " Match generic minted environment regions
-  call vimtex#syntax#core#new_region_env('texMintedZone', 'minted', {
+  call vimtex#syntax#core#new_env({
+        \ 'name': 'minted',
+        \ 'region': 'texMintedZone',
         \ 'contains': 'texCmdEnv,texMintedEnvBgn',
         \})
 
@@ -56,8 +58,8 @@ function! vimtex#syntax#p#minted#load(cfg) abort " {{{1
     let l:contains_inline = ''
 
     if !empty(l:cluster)
-      let l:contains .= ',@' . l:cluster
-      let l:contains_inline = '@' . l:cluster
+      let l:contains .= ',' . l:cluster
+      let l:contains_inline = l:cluster
     else
       execute 'highlight def link' l:grp_env 'texMintedZone'
       execute 'highlight def link' l:grp_inline 'texMintedZoneInline'
@@ -153,7 +155,7 @@ function! s:parse_minted_constructs() abort " {{{1
     endif
 
     " Single line minted environments
-    let l:lang = matchstr(l:line, '\\begin{minted}\%(\s*\[\[^\]]*\]\)\?\s*{\zs\w\+\ze}')
+    let l:lang = matchstr(l:line, '\\begin{minted}\%(\s*\[[^\]]*\]\)\?\s*{\zs\w\+\ze}')
     if !empty(l:lang)
       call l:db.register(l:lang)
       continue

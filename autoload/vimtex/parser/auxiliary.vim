@@ -19,11 +19,14 @@ function! vimtex#parser#auxiliary#labels() abort " {{{1
   "
   " Returns a list of candidates like {'word': name, 'menu': type number page}.
   "
-  let l:files = [[b:vimtex.aux(), '']]
+  let l:files = [[b:vimtex.compiler.get_file('aux'), '']]
 
   " Handle local file editing (e.g. subfiles package)
   if exists('b:vimtex_local') && b:vimtex_local.active
-    let l:files += [[vimtex#state#get(b:vimtex_local.main_id).aux(), '']]
+    let l:files += [[
+          \ vimtex#state#get(b:vimtex_local.main_id).compiler.get_file('aux'),
+          \ ''
+          \]]
   endif
 
   " Add externaldocuments (from \externaldocument in preamble)
@@ -112,6 +115,8 @@ function! s:parse_labels(file, prefix) abort " {{{1
   for l:line in l:lines
     let l:line = vimtex#util#tex2unicode(l:line)
     let l:tree = vimtex#util#tex2tree(l:line)[1:]
+    if len(l:tree) < 2 | continue | endif
+
     let l:name = get(remove(l:tree, 0), 0, '')
     if empty(l:name) | continue | endif
 
@@ -153,7 +158,7 @@ function! s:parse_number(num_tree) abort " {{{1
       return s:parse_number(a:num_tree[l:index])
     endif
   else
-    let l:matches = matchlist(a:num_tree, '\v(^|.*\s)((\u|\d+)(\.\d+)*\l?)($|\s.*)')
+    let l:matches = matchlist(a:num_tree, '\v(^|.*\s)((\u|\d+)(\.\d+)*\S?)($|\s.*)')
     return len(l:matches) > 3 ? l:matches[2] : '-'
   endif
 endfunction

@@ -53,7 +53,9 @@ function! vimtex#qf#open(force) abort " {{{1
     endif
     return
   catch
-    call vimtex#log#error('Something went wrong when parsing log files!')
+    call vimtex#log#error(
+          \ 'Something went wrong when parsing log files!',
+          \ v:exception)
     if g:vimtex_quickfix_mode > 0
       cclose
     endif
@@ -83,6 +85,7 @@ function! vimtex#qf#open(force) abort " {{{1
     let s:previous_window = win_getid()
     botright cwindow
     if g:vimtex_quickfix_mode == 2
+      redraw
       call win_gotoid(s:previous_window)
     endif
     if g:vimtex_quickfix_autoclose_after_keystrokes > 0
@@ -99,15 +102,15 @@ endfunction
 function! vimtex#qf#setqflist(...) abort " {{{1
   if !exists('b:vimtex.qf.addqflist') | return | endif
 
-  if a:0 > 0
+  if a:0 > 0 && !empty(a:1)
     let l:tex = a:1
     let l:log = fnamemodify(l:tex, ':r') . '.log'
     let l:blg = fnamemodify(l:tex, ':r') . '.blg'
     let l:jump = 0
   else
     let l:tex = b:vimtex.tex
-    let l:log = b:vimtex.log()
-    let l:blg = b:vimtex.ext('blg')
+    let l:log = b:vimtex.compiler.get_file('log')
+    let l:blg = b:vimtex.compiler.get_file('blg')
     let l:jump = g:vimtex_quickfix_autojump
   endif
 
@@ -138,6 +141,12 @@ function! vimtex#qf#setqflist(...) abort " {{{1
       endfor
       call setqflist(l:qflist, 'r')
     endif
+
+    " Put errors on top
+    let l:qflist = getqflist()
+    call setqflist(l:qflist->sort({ q1, q2 ->
+          \ (q2.type ==? 'e' ? 1 : 0) - (q1.type ==? 'e' ? 1 : 0)
+          \}), 'r')
 
     " Set title if supported
     try
@@ -193,18 +202,25 @@ endfunction
 
 " }}}1
 function! s:qf_autoclose_check() abort " {{{1
+  " Avoid this check if command-line window is open
+  " See :help E11
+  if bufexists("[Command Line]") | return | endif
+
   if get(s:, 'keystroke_counter') == 0
     let s:keystroke_counter = g:vimtex_quickfix_autoclose_after_keystrokes
   endif
 
-  redir => l:bufstring
-  silent! ls!
-  redir END
+  let l:qf_winnr = map(
+        \ filter(getwininfo(),
+        \   {_, x -> x.tabnr == tabpagenr() && x.quickfix && !x.loclist}),
+        \ {_, x -> x.winnr})
 
-  if empty(filter(split(l:bufstring, '\n'), 'v:val =~# ''%a- .*Quickfix'''))
-    let s:keystroke_counter -= 1
-  else
+  if empty(l:qf_winnr)
+    let s:keystroke_counter = 0
+  elseif l:qf_winnr[0] == winnr()
     let s:keystroke_counter = g:vimtex_quickfix_autoclose_after_keystrokes + 1
+  else
+    let s:keystroke_counter -= 1
   endif
 
   if s:keystroke_counter == 0

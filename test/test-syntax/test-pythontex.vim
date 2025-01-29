@@ -1,10 +1,10 @@
 source common.vim
 
-silent edit test-pythontex.tex
+EditConcealed test-pythontex.tex
 
 if empty($INMAKE) | finish | endif
 
-call vimtex#test#assert(vimtex#syntax#in('pythonString', 11, 13))
-call vimtex#test#assert(vimtex#syntax#in('pythonRawString', 16, 13))
+call assert_true(vimtex#syntax#in('pythonString', 11, 13))
+call assert_true(vimtex#syntax#in('pythonRawString', 16, 13))
 
-quit!
+call vimtex#test#finished()

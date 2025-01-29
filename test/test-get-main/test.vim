@@ -2,7 +2,7 @@ set nocompatible
 let &rtp = '../..,' . &rtp
 filetype plugin on
 
-set nomore
+call vimtex#log#set_silent()
 
 " Ugly paths
 call vimtex#test#main('test-ugly-paths/[code college-1] title/test.tex',
@@ -56,4 +56,13 @@ call vimtex#test#main('test-bib-alternate/references.bib', '')
 execute 'silent edit' fnameescape('test-bib-alternate/main.tex')
 call vimtex#test#main('test-bib-alternate/references.bib', 'test-bib-alternate/main.tex')
 
-quit!
+" Test standalone
+call vimtex#test#main('test-standalone/a/a.tex', 'test-standalone/main.tex')
+call vimtex#test#main('test-standalone/a/a.tex', 'test-standalone/a/a.tex', 1)
+
+" Test included preamble
+call vimtex#test#main(
+      \ './test-included-preamble/preamble.tex',
+      \ './test-included-preamble/main.tex')
+
+call vimtex#test#finished()

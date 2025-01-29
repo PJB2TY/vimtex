@@ -2,22 +2,22 @@ set nocompatible
 let &rtp = '../..,' . &rtp
 filetype plugin on
 
-set nomore
-
 nnoremap q :qall!<cr>
+
+call vimtex#log#set_silent()
 
 if empty($INMAKE) | finish | endif
 
 " Open included file should create two states (main and included)
-call vimtex#test#assert_equal(len(vimtex#state#list_all()), 0)
+call assert_equal(len(vimtex#state#list_all()), 0)
 silent edit included.tex
-call vimtex#test#assert_equal(len(vimtex#state#list_all()), 2)
+call assert_equal(len(vimtex#state#list_all()), 2)
 
 " If we toggle to the included state then wipe it, we should not cleanup the
 " main state
-silent VimtexToggleMain
+VimtexToggleMain
 bwipeout
-call vimtex#test#assert_equal(len(vimtex#state#list_all()), 1)
+call assert_equal(len(vimtex#state#list_all()), 1)
 
 "
 " The main state should be cleaned up when we exit, though!
@@ -30,7 +30,8 @@ augroup Testing
 augroup END
 
 function! Finalize() abort
-  call vimtex#test#assert_equal(g:test, 1)
+  call assert_equal(g:test, 1)
+  call vimtex#test#finished()
 endfunction
 
 autocmd Testing VimLeave * call Finalize()
